@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="pt-br" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elo Anímico - Jogo Cooperativo</title>
+    <!-- Carrega o Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuração do Tailwind para usar a fonte "Inter" -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        'p1-color': '#4ade80', // green-400
+                        'p2-color': '#60a5fa', // blue-400
+                        'altar-color': '#f43f5e', // rose-500
+                        'platform-color': '#4b5563', // gray-600
+                        'exit-color': '#eab308' // yellow-500
+                    },
+                    animation: {
+                        'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                },
+            },
+        }
+    </script>
+    <style>
+        /* Estilo para o canvas do jogo */
+        canvas {
+            background-color: #111827; /* gray-900 */
+            border: 2px solid #374151; /* gray-700 */
+            border-radius: 0.5rem; /* rounded-lg */
+        }
+        body {
+            overscroll-behavior: none; /* Impede "pull-to-refresh" */
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col items-center justify-center text-gray-200 font-sans p-4">
+
+    <!-- === ECRÃ DE LOGIN / MENU === -->
+    <div id="ui-container" class="w-full max-w-md p-6 bg-gray-800 rounded-xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-center text-white mb-2">Elo Anímico</h1>
+        <p class="text-center text-gray-400 mb-6">Ajuda-te sacrificando-te.</p>
+
+        <!-- Informações do Utilizador -->
+        <div class="mb-4 p-3 bg-gray-700 rounded-lg">
+            <p class="text-sm text-gray-400">O teu ID de Jogador:</p>
+            <p id="user-id-display" class="font-mono text-xs break-all text-white">A autenticar...</p>
+        </div>
+
+        <!-- Criar Jogo -->
+        <button id="create-game-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-lg text-lg transition duration-200 shadow-lg">
+            Criar Novo Jogo
+        </button>
+
+        <hr class="border-gray-600 my-6">
+
+        <!-- Entrar no Jogo -->
+        <p class="text-center text-gray-400 mb-2">Ou entra num jogo existente:</p>
+        <div class="flex space-x-2">
+            <input type="text" id="join-room-input" placeholder="ID da Sala" class="flex-grow bg-gray-700 text-white p-3 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <button id="join-game-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-lg">
+                Entrar
+            </button>
+        </div>
+    </div>
+
+    <!-- === ECRÃ DO JOGO === -->
+    <div id="game-container" class="hidden w-full max-w-5xl">
+        <!-- Informações do Jogo -->
+        <div class="mb-4 p-4 bg-gray-800 rounded-lg shadow-lg flex flex-col sm:flex-row justify-between items-center space-y-2 sm:space-y-0">
+            <div class="text-center sm:text-left">
+                <h2 class="text-xl font-bold text-white">Elo Anímico</h2>
+                <p class="text-sm text-gray-400">ID da Sala: <span id="room-id-display" class="font-mono font-bold text-yellow-400"></span></p>
+            </div>
+            <!-- Status dos Jogadores -->
+            <div class="flex space-x-4">
+                <div class="text-center">
+                    <p class="font-bold text-p1-color">Jogador 1 (Tu)</p>
+                    <p id="p1-status" class="text-sm font-mono"></p>
+                </div>
+                <div class="text-center">
+                    <p class="font-bold text-p2-color">Jogador 2 (Parceiro)</p>
+                    <p id="p2-status" class="text-sm font-mono"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Canvas do Jogo -->
+        <canvas id="game-canvas" width="800" height="600" class="w-full rounded-lg shadow-2xl"></canvas>
+        
+        <!-- Caixa de Mensagem -->
+        <div id="message-box" class="mt-4 text-center text-lg font-semibold text-yellow-300 h-8"></div>
+    </div>
+
+    <!-- Scripts do Firebase e do Jogo -->
+    <script type="module">
+        // Importações do Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            updateDoc, 
+            onSnapshot,
+            setLogLevel
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // === VARIÁVEIS GLOBAIS ===
+        let db, auth, app;
+        let userId;
+        let gameRoomId;
+        let localPlayerNum = 1; // 1 ou 2
+        let unsubscribeFromGame;
+        let gameLoopRunning = false;
+
+        // Configuração do Firebase (fornecida pelo ambiente)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-soul-link';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+
+        // Referências do DOM
+        const uiContainer = document.getElementById('ui-container');
+        const gameContainer = document.getElementById('game-container');
+        const createGameBtn = document.getElementById('create-game-btn');
+        const joinGameBtn = document.getElementById('join-game-btn');
+        const joinRoomInput = document.getElementById('join-room-input');
+        const userIdDisplay = document.getElementById('user-id-display');
+        const roomIdDisplay = document.getElementById('room-id-display');
+        const p1Status = document.getElementById('p1-status');
+        const p2Status = document.getElementById('p2-status');
+        const messageBox = document.getElementById('message-box');
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Constantes do Jogo
+        const PLAYER_SIZE = 20;
+        const P1_COLOR = tailwind.config.theme.extend.colors['p1-color'];
+        const P2_COLOR = tailwind.config.theme.extend.colors['p2-color'];
+        const ALTAR_COLOR = tailwind.config.theme.extend.colors['altar-color'];
+        const PLATFORM_COLOR = tailwind.config.theme.extend.colors['platform-color'];
+        const EXIT_COLOR = tailwind.config.theme.extend.colors['exit-color'];
+        
+        const GRAVITY = 0.5;
+        const JUMP_FORCE = -10;
+        const FLOAT_FORCE = -0.3;
+        const MOVE_SPEED = 5;
+
+        // Estado do Jogo (Sincronizado)
+        let remoteGameState = {};
+
+        // Estado do Jogador Local
+        let localPlayer = {
+            pos: { x: 50, y: 550 },
+            vel: { x: 0, y: 0 },
+            state: {
+                hasJump: true,
+                hasFloat: false,
+                onGround: false
+            },
+            onAltar: null, // ID do altar em que está
+            onExit: false
+        };
+        let partnerPlayer = {}; // Posição e estado do outro jogador
+        
+        // Entradas do Teclado
+        const keysPressed = {};
+
+        // Definição do Nível 1
+        // (x, y, largura, altura, tipo)
+        const levelPlatforms = [
+            // Chão
+            { x: 0, y: 580, w: 800, h: 20, type: 'platform' },
+            
+            // --- Área do Jogador 1 (Início) ---
+            { x: 200, y: 500, w: 100, h: 20, type: 'platform' },
+            { x: 0, y: 420, w: 150, h: 20, type: 'platform' },
+            // O Altar do Sacrifício
+            { x: 50, y: 360, w: 60, h: 10, type: 'altar', id: 'altar1', sacrifice: 'hasJump', reward: 'hasFloat' },
+            // Parede alta (intransponível com pulo normal)
+            { x: 350, y: 350, w: 20, h: 230, type: 'platform' },
+
+            // --- Área do Jogador 2 ---
+            // Poço onde P2 começa
+            { x: 450, y: 400, w: 20, h: 180, type: 'platform' },
+            { x: 450, y: 580, w: 200, h: 20, type: 'platform' }, // Chão do poço
+            { x: 650, y: 400, w: 20, h: 180, type: 'platform' },
+            // Plataforma para sair do poço (requer flutuar)
+            { x: 500, y: 350, w: 100, h: 20, type: 'platform' },
+            // Plataforma do interruptor
+            { x: 600, y: 280, w: 80, h: 20, type: 'platform' },
+            // O Interruptor (parece um altar)
+            { x: 620, y: 270, w: 40, h: 10, type: 'switch', id: 'switch1', opens: 'bridge1' },
+
+            // Ponte (controlada por P2)
+            { x: 370, y: 350, w: 80, h: 20, type: 'bridge', id: 'bridge1', activated: false },
+
+            // Saída
+            { x: 700, y: 520, w: 60, h: 60, type: 'exit', id: 'exit1' }
+        ];
+
+        // === INICIALIZAÇÃO E AUTENTICAÇÃO ===
+
+        async function initializeAndAuth() {
+            try {
+                //setLogLevel('debug'); // Ativar logs do Firestore
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        userIdDisplay.textContent = userId;
+                        createGameBtn.disabled = false;
+                        joinGameBtn.disabled = false;
+                    } else {
+                        // Tentar autenticação com token personalizado ou anónimo
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error("Erro na inicialização do Firebase:", error);
+                userIdDisplay.textContent = "Erro de autenticação.";
+                messageBox.textContent = "Erro ao conectar. Tente recarregar.";
+            }
+        }
+
+        // === LÓGICA DO MENU DO JOGO ===
+
+        createGameBtn.onclick = async () => {
+            gameRoomId = crypto.randomUUID().substring(0, 6).toUpperCase();
+            roomIdDisplay.textContent = gameRoomId;
+            localPlayerNum = 1;
+            
+            // Posição inicial de P1
+            localPlayer.pos = { x: 50, y: 550 };
+
+            const gamePath = `artifacts/${appId}/public/data/soul-link-games/${gameRoomId}`;
+            const initialGameState = {
+                player1: {
+                    id: userId,
+                    pos: localPlayer.pos,
+                    state: localPlayer.state
+                },
+                player2: {
+                    id: null,
+                    pos: { x: 550, y: 550 }, // Posição inicial de P2
+                    state: { hasJump: true, hasFloat: false, onGround: false }
+                },
+                level_state: {
+                    bridge1_activated: false,
+                    p1_on_exit: false,
+                    p2_on_exit: false,
+                    level_complete: false
+                }
+            };
+
+            try {
+                await setDoc(doc(db, gamePath), initialGameState);
+                startGame();
+            } catch (error) {
+                console.error("Erro ao criar jogo:", error);
+                messageBox.textContent = "Erro ao criar a sala.";
+            }
+        };
+
+        joinGameBtn.onclick = async () => {
+            const inputId = joinRoomInput.value.toUpperCase();
+            if (!inputId) {
+                alert("Por favor, insere um ID de Sala.");
+                return;
+            }
+
+            const gamePath = `artifacts/${appId}/public/data/soul-link-games/${inputId}`;
+            const gameDocRef = doc(db, gamePath);
+            
+            try {
+                const gameDoc = await getDoc(gameDocRef);
+                if (!gameDoc.exists()) {
+                    alert("Sala não encontrada!");
+                    return;
+                }
+                
+                const gameData = gameDoc.data();
+                if (gameData.player2.id && gameData.player2.id !== userId) {
+                    alert("A sala já está cheia!");
+                    return;
+                }
+
+                gameRoomId = inputId;
+                roomIdDisplay.textContent = gameRoomId;
+                localPlayerNum = 2;
+                
+                // Posição inicial de P2
+                localPlayer.pos = { x: 550, y: 550 };
+                
+                await updateDoc(gameDocRef, {
+                    "player2.id": userId,
+                    "player2.pos": localPlayer.pos,
+                    "player2.state": localPlayer.state
+                });
+                
+                startGame();
+            } catch (error) {
+                console.error("Erro ao entrar no jogo:", error);
+                alert("Erro ao entrar na sala.");
+            }
+        };
+
+        // === LÓGICA PRINCIPAL DO JOGO ===
+
+        function startGame() {
+            uiContainer.classList.add('hidden');
+            gameContainer.classList.remove('hidden');
+
+            // Ajustar o tamanho do canvas
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            // Ouvintes de teclado
+            window.addEventListener('keydown', (e) => { keysPressed[e.key.toLowerCase()] = true; });
+            window.addEventListener('keyup', (e) => { keysPressed[e.key.toLowerCase()] = false; });
+
+            // Iniciar o listener do Firestore
+            const gamePath = `artifacts/${appId}/public/data/soul-link-games/${gameRoomId}`;
+            unsubscribeFromGame = onSnapshot(doc(db, gamePath), (doc) => {
+                if (doc.exists()) {
+                    remoteGameState = doc.data();
+                    
+                    // Atualizar o estado do parceiro
+                    if (localPlayerNum === 1) {
+                        partnerPlayer = remoteGameState.player2;
+                    } else {
+                        partnerPlayer = remoteGameState.player1;
+                    }
+                    
+                    // Atualizar o estado local com base no remoto (ex: se o parceiro mudou minhas habilidades)
+                    const remoteLocalData = localPlayerNum === 1 ? remoteGameState.player1 : remoteGameState.player2;
+                    localPlayer.state = remoteLocalData.state;
+
+                    // Atualizar o estado do nível (pontes, etc.)
+                    levelPlatforms.find(p => p.id === 'bridge1').activated = remoteGameState.level_state.bridge1_activated;
+                    
+                    // Atualizar UI de status
+                    updateStatusUI();
+                    
+                    // Verificar condição de vitória
+                    if(remoteGameState.level_state.level_complete) {
+                        showMessage("NÍVEL COMPLETO! Parabéns, equipa!", false);
+                        stopGameLoop();
+                    }
+
+                } else {
+                    // O jogo foi apagado (talvez o anfitrião saiu)
+                    alert("A sala do jogo foi fechada.");
+                    window.location.reload();
+                }
+            });
+
+            // Iniciar o loop do jogo
+            if (!gameLoopRunning) {
+                gameLoopRunning = true;
+                gameLoop();
+            }
+            
+            // Iniciar o envio de atualizações
+            setInterval(sendPlayerUpdate, 50); // Envia atualizações 20x por segundo
+        }
+
+        function stopGameLoop() {
+            gameLoopRunning = false;
+            if (unsubscribeFromGame) unsubscribeFromGame();
+        }
+
+        function resizeCanvas() {
+            // Mantém a proporção 4:3 (800x600)
+            const containerWidth = gameContainer.clientWidth;
+            canvas.width = 800; // Resolução interna fixa
+            canvas.height = 600;
+            // Ajusta o estilo CSS para caber no container
+            canvas.style.width = `${containerWidth}px`;
+            canvas.style.height = `${(containerWidth / 800) * 600}px`;
+        }
+
+        // Loop principal do jogo
+        function gameLoop() {
+            if (!gameLoopRunning) return;
+
+            updatePlayerMovement();
+            checkInteractions();
+            draw();
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Atualiza a posição e física do jogador local
+        function updatePlayerMovement() {
+            // Movimento Horizontal
+            if (keysPressed['a'] || keysPressed['arrowleft']) {
+                localPlayer.vel.x = -MOVE_SPEED;
+            } else if (keysPressed['d'] || keysPressed['arrowright']) {
+                localPlayer.vel.x = MOVE_SPEED;
+            } else {
+                localPlayer.vel.x = 0;
+            }
+
+            // Aplicar gravidade
+            localPlayer.vel.y += GRAVITY;
+            
+            // Pulo
+            if ((keysPressed['w'] || keysPressed['arrowup'] || keysPressed[' ']) && localPlayer.state.hasJump && localPlayer.state.onGround) {
+                localPlayer.vel.y = JUMP_FORCE;
+                localPlayer.state.onGround = false;
+            }
+            
+            // Flutuar
+            if ((keysPressed['w'] || keysPressed['arrowup'] || keysPressed[' ']) && localPlayer.state.hasFloat) {
+                localPlayer.vel.y += FLOAT_FORCE;
+            }
+
+            // Colisão com plataformas
+            localPlayer.state.onGround = false;
+            localPlayer.pos.x += localPlayer.vel.x;
+            
+            // Colisão Horizontal (simples)
+            for (const platform of levelPlatforms) {
+                if (platform.type === 'bridge' && !platform.activated) continue;
+                if (isColliding(localPlayer, platform)) {
+                    localPlayer.pos.x -= localPlayer.vel.x; // Desfazer movimento
+                    localPlayer.vel.x = 0;
+                    break;
+                }
+            }
+            
+            localPlayer.pos.y += localPlayer.vel.y;
+
+            // Colisão Vertical (simples)
+            for (const platform of levelPlatforms) {
+                if (platform.type === 'bridge' && !platform.activated) continue;
+                if (isColliding(localPlayer, platform)) {
+                    if (localPlayer.vel.y > 0) { // Caindo
+                        localPlayer.pos.y = platform.y - PLAYER_SIZE;
+                        localPlayer.vel.y = 0;
+                        localPlayer.state.onGround = true;
+                    } else if (localPlayer.vel.y < 0) { // Batendo a cabeça
+                        localPlayer.pos.y = platform.y + platform.h;
+                        localPlayer.vel.y = 0;
+                    }
+                    break;
+                }
+            }
+            
+            // Limites do canvas
+            if (localPlayer.pos.x < 0) localPlayer.pos.x = 0;
+            if (localPlayer.pos.x + PLAYER_SIZE > canvas.width) localPlayer.pos.x = canvas.width - PLAYER_SIZE;
+        }
+        
+        // Verifica colisões com objetos especiais (Altares, Saída)
+        function checkInteractions() {
+            let onAnyAltar = null;
+            let onAnySwitch = null;
+            let onAnyExit = false;
+
+            const playerRect = { ...localPlayer.pos, w: PLAYER_SIZE, h: PLAYER_SIZE };
+
+            for (const platform of levelPlatforms) {
+                // Verificar Altares de Sacrifício
+                if (platform.type === 'altar') {
+                    if (isColliding(playerRect, platform)) {
+                        onAnyAltar = platform;
+                    }
+                }
+                // Verificar Interruptores
+                if (platform.type === 'switch') {
+                    if (isColliding(playerRect, platform)) {
+                        onAnySwitch = platform;
+                    }
+                }
+                // Verificar Saída
+                if (platform.type === 'exit') {
+                    if (isColliding(playerRect, platform)) {
+                        onAnyExit = true;
+                    }
+                }
+            }
+            
+            localPlayer.onAltar = onAnyAltar;
+            localPlayer.onExit = onAnyExit;
+
+            // Lógica de Sacrifício
+            if (localPlayer.onAltar && keysPressed['e']) {
+                performSacrifice(localPlayer.onAltar);
+                keysPressed['e'] = false; // Prevenir repetição
+            }
+            
+            // Lógica de Interruptor
+            if (onAnySwitch && keysPressed['e']) {
+                activateSwitch(onAnySwitch);
+                keysPressed['e'] = false;
+            }
+        }
+        
+        // Função de Sacrifício (Atualiza o Firestore)
+        async function performSacrifice(altar) {
+            if (!remoteGameState) return;
+
+            const sacrificeKey = altar.sacrifice; // ex: 'hasJump'
+            const rewardKey = altar.reward; // ex: 'hasFloat'
+            
+            // Determinar quem é quem
+            const sacrificingPlayerKey = localPlayerNum === 1 ? 'player1' : 'player2';
+            const receivingPlayerKey = localPlayerNum === 1 ? 'player2' : 'player1';
+
+            // Verificar se o jogador realmente tem a habilidade para sacrificar
+            if (remoteGameState[sacrificingPlayerKey].state[sacrificeKey] === false) {
+                showMessage("Já sacrificaste esta habilidade!", true);
+                return;
+            }
+
+            showMessage("Sacrifício realizado! O teu parceiro recebeu um poder.", true);
+
+            // Criar o objeto de atualização
+            let updates = {};
+            updates[`${sacrificingPlayerKey}.state.${sacrificeKey}`] = false; // Remover habilidade
+            updates[`${receivingPlayerKey}.state.${rewardKey}`] = true; // Dar habilidade
+
+            const gamePath = `artifacts/${appId}/public/data/soul-link-games/${gameRoomId}`;
+            try {
+                await updateDoc(doc(db, gamePath), updates);
+            } catch (error) {
+                console.error("Erro ao realizar sacrifício:", error);
+            }
+        }
+        
+        // Função de Ativar Interruptor
+        async function activateSwitch(switchObj) {
+            if (!remoteGameState) return;
+            
+            const bridgeId = `${switchObj.opens}_activated`; // ex: 'bridge1_activated'
+            
+            if (remoteGameState.level_state[bridgeId] === true) {
+                 showMessage("A ponte já está ativada!", true);
+                 return;
+            }
+
+            showMessage("Interruptor ativado! Algo se abriu...", true);
+
+            let updates = {};
+            updates[`level_state.${bridgeId}`] = true;
+
+            const gamePath = `artifacts/${appId}/public/data/soul-link-games/${gameRoomId}`;
+            try {
+                await updateDoc(doc(db, gamePath), updates);
+            } catch (error) {
+                console.error("Erro ao ativar interruptor:", error);
+            }
+        }
+
+        // Envia a atualização do jogador local para o Firestore
+        async function sendPlayerUpdate() {
+            if (!gameRoomId || !remoteGameState) return;
+
+            // Enviar posição
+            const posUpdate = {};
+            const playerKey = localPlayerNum === 1 ? 'player1' : 'player2';
+            posUpdate[`${playerKey}.pos`] = localPlayer.pos;
+            
+            // Enviar estado de "na saída"
+            const exitKey = localPlayerNum === 1 ? 'p1_on_exit' : 'p2_on_exit';
+            
+            // Só atualiza se o estado mudou
+            if (remoteGameState.level_state[exitKey] !== localPlayer.onExit) {
+                 posUpdate[`level_state.${exitKey}`] = localPlayer.onExit;
+            }
+
+            const gamePath = `artifacts/${appId}/public/data/soul-link-games/${gameRoomId}`;
+            
+            try {
+                // Usamos updateDoc em vez de setDoc(merge:true) por ser mais leve
+                await updateDoc(doc(db, gamePath), posUpdate);
+                
+                // Verificar condição de vitória (localmente, depois de enviar o estado)
+                checkWinCondition();
+                
+            } catch (error) {
+                // Não logar erros de rede (podem ser muitos), mas parar o jogo se a sala não existir
+                if (error.code === 'not-found') {
+                    console.error("A sala do jogo não existe mais.");
+                    stopGameLoop();
+                    alert("A sala do jogo foi fechada.");
+                    window.location.reload();
+                }
+            }
+        }
+        
+        // Verifica se ambos os jogadores estão na saída
+        async function checkWinCondition() {
+            // Usamos o remoteGameState para ter a visão mais atualizada de ambos
+            const p1onExit = (localPlayerNum === 1) ? localPlayer.onExit : remoteGameState.level_state.p1_on_exit;
+            const p2onExit = (localPlayerNum === 2) ? localPlayer.onExit : remoteGameState.level_state.p2_on_exit;
+
+            if (p1onExit && p2onExit && !remoteGameState.level_state.level_complete) {
+                // Ambos estão na saída! Apenas um jogador (P1) atualiza o estado de vitória
+                if (localPlayerNum === 1) {
+                    const gamePath = `artifacts/${appId}/public/data/soul-link-games/${gameRoomId}`;
+                    await updateDoc(doc(db, gamePath), { "level_state.level_complete": true });
+                }
+            }
+        }
+
+        // === FUNÇÕES DE RENDERIZAÇÃO (CANVAS) ===
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Desenhar Nível
+            levelPlatforms.forEach(p => {
+                if (p.type === 'platform') {
+                    ctx.fillStyle = PLATFORM_COLOR;
+                } else if (p.type === 'altar' || p.type === 'switch') {
+                    ctx.fillStyle = ALTAR_COLOR;
+                } else if (p.type === 'exit') {
+                    ctx.fillStyle = EXIT_COLOR;
+                } else if (p.type === 'bridge') {
+                    if (!p.activated) return; // Não desenha a ponte se não estiver ativa
+                    ctx.fillStyle = PLATFORM_COLOR; 
+                }
+                
+                ctx.fillRect(p.x, p.y, p.w, p.h);
+                
+                // Texto de ajuda para altares/interruptores
+                if (p.type === 'altar' && localPlayer.onAltar && localPlayer.onAltar.id === p.id) {
+                    ctx.fillStyle = "white";
+                    ctx.font = "14px Inter";
+                    ctx.textAlign = "center";
+                    ctx.fillText("[E] para Sacrificar", p.x + p.w / 2, p.y - 10);
+                }
+                if (p.type === 'switch' && isColliding(localPlayer, p)) {
+                    ctx.fillStyle = "white";
+                    ctx.font = "14px Inter";
+                    ctx.textAlign = "center";
+                    ctx.fillText("[E] para Ativar", p.x + p.w / 2, p.y - 10);
+                }
+            });
+            
+            // Desenhar Jogador 1 (seja local ou remoto)
+            const p1 = (localPlayerNum === 1) ? localPlayer : partnerPlayer;
+            if(p1 && p1.pos) {
+                ctx.fillStyle = P1_COLOR;
+                ctx.fillRect(p1.pos.x, p1.pos.y, PLAYER_SIZE, PLAYER_SIZE);
+                if (p1.state && p1.state.hasFloat) {
+                    ctx.globalAlpha = 0.5;
+                    ctx.beginPath();
+                    ctx.arc(p1.pos.x + PLAYER_SIZE/2, p1.pos.y + PLAYER_SIZE/2, PLAYER_SIZE, 0, 2 * Math.PI);
+                    ctx.fillStyle = P1_COLOR;
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+
+            // Desenhar Jogador 2 (seja local ou remoto)
+            const p2 = (localPlayerNum === 2) ? localPlayer : partnerPlayer;
+            if(p2 && p2.pos) {
+                ctx.fillStyle = P2_COLOR;
+                ctx.fillRect(p2.pos.x, p2.pos.y, PLAYER_SIZE, PLAYER_SIZE);
+                if (p2.state && p2.state.hasFloat) {
+                    ctx.globalAlpha = 0.5;
+                    ctx.beginPath();
+                    ctx.arc(p2.pos.x + PLAYER_SIZE/2, p2.pos.y + PLAYER_SIZE/2, PLAYER_SIZE, 0, 2 * Math.PI);
+                    ctx.fillStyle = P2_COLOR;
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+        }
+        
+        // === FUNÇÕES UTILITÁRIAS ===
+        
+        // Colisão AABB (Axis-Aligned Bounding Box)
+        function isColliding(rect1, rect2) {
+            // Ajustar rect1 para ter w/h se for o jogador
+            const r1 = {
+                x: rect1.pos ? rect1.pos.x : rect1.x,
+                y: rect1.pos ? rect1.pos.y : rect1.y,
+                w: rect1.w || PLAYER_SIZE,
+                h: rect1.h || PLAYER_SIZE
+            };
+            
+            return (
+                r1.x < rect2.x + rect2.w &&
+                r1.x + r1.w > rect2.x &&
+                r1.y < rect2.y + rect2.h &&
+                r1.h + r1.y > rect2.y
+            );
+        }
+        
+        let messageTimeout;
+        function showMessage(msg, autoClear = true) {
+            messageBox.textContent = msg;
+            if (messageTimeout) clearTimeout(messageTimeout);
+            if(autoClear) {
+                messageTimeout = setTimeout(() => {
+                    messageBox.textContent = "";
+                }, 3000);
+            }
+        }
+        
+        function updateStatusUI() {
+            if (!remoteGameState.player1) return;
+            
+            // Garantir que a UI reflete quem é quem
+            const p1_data = (localPlayerNum === 1) ? localPlayer.state : remoteGameState.player1.state;
+            const p2_data = (localPlayerNum === 2) ? localPlayer.state : remoteGameState.player2.state;
+
+            p1Status.textContent = `Pulo: ${p1_data.hasJump ? '✅' : '❌'} | Flutuar: ${p1_data.hasFloat ? '✅' : '❌'}`;
+            p2Status.textContent = `Pulo: ${p2_data.hasJump ? '✅' : '❌'} | Flutuar: ${p2_data.hasFloat ? '✅' : '❌'}`;
+
+            // Destacar o teu jogador
+            if (localPlayerNum === 1) {
+                p1Status.parentElement.classList.add('animate-pulse-fast');
+                p2Status.parentElement.classList.remove('animate-pulse-fast');
+            } else {
+                p2Status.parentElement.classList.add('animate-pulse-fast');
+                p1Status.parentElement.classList.remove('animate-pulse-fast');
+            }
+        }
+
+        // Iniciar a aplicação
+        initializeAndAuth();
+
+    </script>
+</body>
+</html>
